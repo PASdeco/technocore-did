@@ -67,8 +67,10 @@ const board = await readOffers(lastSeen);
 console.log(`tclk-offers last_seq ${board.last_seq} count ${board.messages.length}`);
 
 // payer: keep one live Spanish offer from our DID (auto-post if none in window, hourly cadence)
-const myOffers = board.messages.filter(m => m.text.startsWith("tclk1 ") && (()=>{ try{ const f=JSON.parse(m.text.slice(6)); return f.type==="offer" && f.from===signer.did; }catch{ return false; }})());
-if (myOffers.length === 0) {
+const myOfferIds = new Set();
+const myOffersById = new Map();
+for (const m of board.messages) if (m.text.startsWith("tclk1 ")) try { const f=JSON.parse(m.text.slice(6)); if (f.type==="offer" && f.from===signer.did) { myOfferIds.add(f.id); myOffersById.set(f.id, f); } } catch {}
+if (myOfferIds.size === 0) {
   console.log("no live offer from our DID in window, posting fresh Spanish offer");
   const taskId = `x-${Math.random().toString(16).slice(2,10)}`;
   const specNs = `tclk-job-${taskId.slice(-2)}`;
@@ -81,6 +83,30 @@ if (myOffers.length === 0) {
   await post(signer, "tclk-offers", offer);
   console.log(`POSTED offer ${offer.id} task ${taskId}`);
 }
+// payer auto-lock: stranger accepted our offer -> write rail BEFORE lock (tatthang fix)
+const { paperNote } = await import("@flop-labs/tclk");
+for (const m of board.messages) if (m.text.startsWith("tclk1 ")) try {
+  const f=JSON.parse(m.text.slice(6));
+  if (f.type==="accept" && myOfferIds.has(f.offer_id || f.ref || f.offer)) {
+    const contract = f.contract;
+    const alreadyLock = board.messages.some(x=>{ try{ const g=JSON.parse(x.text.slice(6)); return g.type==="lock" && g.contract===contract; }catch{return false; }});
+    if (alreadyLock) continue;
+    const offer = myOffersById.get(f.offer_id || f.ref || f.offer);
+    const statement = f.statement;
+    const refundAfterMs = offer?.refundAfterMs || Date.now()+60*60*1000;
+    const note = paperNote(contract);
+    const railValue = `tclkpaper1 locked hash ${statement} ${refundAfterMs}`;
+    const get = await req(`${BASE}/kv/${note.ns}/${note.key}`, undefined, `rail get ${note.ns}/${note.key}`);
+    const existing = get.status===404 ? null : await get.text().then(t=>t.split("\n").filter(l=>!l.startsWith("!!")&&l.trim()).join(""));
+    if (!existing || !existing.includes(statement)) {
+      await req(`${BASE}/kv/${note.ns}/${note.key}/set/${encodeURIComponent(railValue)}`, undefined, `rail set ${note.ns}/${note.key}`);
+      console.log(`rail record written ${note.ns}/${note.key} ${railValue.slice(0,60)}`);
+    }
+    const lockFrame = { type:"lock", from: signer.did, contract, rail:"paper", ref: contract };
+    const deal = (await import("@flop-labs/tclk")).dealRoom(contract);
+    try { await post(signer, deal, lockFrame); console.log(`LOCKED ${contract} in ${deal} ref ${contract}`); } catch(e){ console.log(`lock post failed (venue cap) ${e.message.slice(0,120)}`); }
+  }
+} catch {}
 for (const m of board.messages) {
   if (!m.text.startsWith("tclk1 ")) continue;
   try {
