@@ -87,8 +87,8 @@ for (const m of board.messages) {
     const f = JSON.parse(m.text.slice(6));
     if (f.type === "offer" && f.from !== signer.did) {
       const jobText = f.job?.context ? f.job.context : f.job?.id || "";
-      // take any x post job - language from job text, not hardcoded
-      if (JSON.stringify(f).toLowerCase().includes("x post") || JSON.stringify(f).toLowerCase().includes("explain")) {
+      // take any job with a job field (broad) to get interaction fast
+      if (f.job) {
         console.log(`found offer ${f.id} from ${f.from} job ${f.job?.id}`);
         // skip if already accepted (check later msgs)
         const already = board.messages.some(x => x.text.includes(f.id) && x.text.includes('"type":"accept"'));
