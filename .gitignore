@@ -1,5 +1,6 @@
-.venv/
+# existing + secrets
 __pycache__/
+.venv/
+.env
 my-identity.pem
-identity.pem
-*.pem
+last_offer.json
