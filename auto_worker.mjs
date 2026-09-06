@@ -65,6 +65,22 @@ let lastSeen = 0;
 // one poll cycle (GitHub Actions runs every 5m, so one cycle per invocation)
 const board = await readOffers(lastSeen);
 console.log(`tclk-offers last_seq ${board.last_seq} count ${board.messages.length}`);
+
+// payer: keep one live Spanish offer from our DID (auto-post if none in window, hourly cadence)
+const myOffers = board.messages.filter(m => m.text.startsWith("tclk1 ") && (()=>{ try{ const f=JSON.parse(m.text.slice(6)); return f.type==="offer" && f.from===signer.did; }catch{ return false; }})());
+if (myOffers.length === 0) {
+  console.log("no live offer from our DID in window, posting fresh Spanish offer");
+  const taskId = `x-${Math.random().toString(16).slice(2,10)}`;
+  const specNs = `tclk-job-${taskId.slice(-2)}`;
+  const specKey = taskId.slice(0,14);
+  const spec = "x post | explain FLOP network in Spanish <=100 chars, checkable: contains FLOP and Technocore";
+  await req(`${BASE}/kv/${specNs}/${specKey}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: spec }) }, "job spec");
+  const now = Date.now();
+  const { makeOffer } = await import("@flop-labs/tclk");
+  const offer = makeOffer({ from: signer.did, role: "payer", lock: "hash", amount: "1000000", asset: "PAPER", rails: ["paper"], claimByMs: now+30*60*1000, refundAfterMs: now+60*60*1000, expiresMs: now+120*60*1000, job: { id: taskId, proto: "a2a", context: `/${specNs}/${specKey}` } });
+  await post(signer, "tclk-offers", offer);
+  console.log(`POSTED offer ${offer.id} task ${taskId}`);
+}
 for (const m of board.messages) {
   if (!m.text.startsWith("tclk1 ")) continue;
   try {
