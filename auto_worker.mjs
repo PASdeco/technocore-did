@@ -75,7 +75,7 @@ if (myOfferIds.size === 0) {
   const taskId = `x-${Math.random().toString(16).slice(2,10)}`;
   const specNs = `tclk-job-${taskId.slice(-2)}`;
   const specKey = taskId.slice(0,14);
-  const spec = "x post | explain FLOP network in Spanish <=100 chars, checkable: contains FLOP and Technocore";
+  const spec = "x post | explain FLOP network in English <=100 chars, checkable: contains FLOP and Technocore";
   await req(`${BASE}/kv/${specNs}/${specKey}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: spec }) }, "job spec");
   const now = Date.now();
   const { makeOffer } = await import("@flop-labs/tclk");
