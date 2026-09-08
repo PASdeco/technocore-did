@@ -82,13 +82,21 @@ async function summarize(feedTag, item) {
   const source = `${item.title}\n${item.desc}`.slice(0, 2000);
   if (!OPENROUTER_KEY) return `${feedTag}: ${item.title} — ${item.desc.slice(0,120)}... Source: ${item.link}`;
   const prompt = `Summarize this news honestly in 2 short sentences, English, no exaggeration, no guessing. If unsure leave it out. Use only the provided title and description.\nTitle: ${item.title}\nDescription: ${item.desc}\nSource: ${item.link}\nOutput: 2 sentences max, then on new line "Source: <link>".`;
-  // minimax-m3:free now paid, use free fallback
-  const model = "meta-llama/llama-3.2-3b-instruct:free";
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST", headers: { "Authorization": `Bearer ${OPENROUTER_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_tokens: 300, temperature: 0.2 })
-  });
-  if (!res.ok) throw new Error(`minimax ${res.status} ${await res.text()}`);
+  // minimax-m3:free retired, use verified free
+  const model = "liquid/lfm-2.5-2.6b:free";
+  let res;
+  try {
+    res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST", headers: { "Authorization": `Bearer ${OPENROUTER_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_tokens: 300, temperature: 0.2 })
+    });
+  } catch (e) {
+    return `${item.title.slice(0,120)} — ${item.desc.slice(0,120)}... Source: ${item.link}`;
+  }
+  if (!res.ok) {
+    // fallback to honest title+desc if LLM fails, don't crash workflow
+    return `${item.title.slice(0,120)} — ${item.desc.slice(0,120)}... Source: ${item.link}`;
+  }
   const j = await res.json();
   let out = j.choices?.[0]?.message?.content?.trim() || `${item.title}. Source: ${item.link}`;
   if (!out.includes(item.link)) out += `\nSource: ${item.link}`;
