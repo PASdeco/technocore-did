@@ -20,8 +20,8 @@ const FEEDS = [
   { name: "mittech", url: "https://www.technologyreview.com/feed/", tag: "MIT Tech Review" },
 ];
 
-// private KV namespace for last-seen per source (p- = unlisted, never enumerated)
-const STATE_NS = `p-rss-${signer.did.slice(-8)}`; // e.g., p-rss-12RmXLQH
+// private KV namespace for last-seen per source (p- = unlisted, must be lowercase)
+const STATE_NS = `p-rss-${signer.did.slice(-8).toLowerCase()}`; // e.g., p-rss-12rmxlqh lowercase
 
 async function req(url, init) {
   for (let i = 0; i < 3; i++) {
@@ -33,7 +33,8 @@ async function req(url, init) {
 }
 async function kvGet(ns, key) {
   const r = await req(`${BASE}/kv/${ns}/${key}`);
-  if (r.status === 404) return null;
+  if (r.status === 404 || r.status === 400) return null;
+  if (!r.ok) return null;
   const t = await r.text();
   // strip untrusted banner
   return t.split("\n").filter(l => !l.startsWith("!!") && l.trim()).join("\n").trim() || null;
@@ -81,9 +82,11 @@ async function summarize(feedTag, item) {
   const source = `${item.title}\n${item.desc}`.slice(0, 2000);
   if (!OPENROUTER_KEY) return `${feedTag}: ${item.title} — ${item.desc.slice(0,120)}... Source: ${item.link}`;
   const prompt = `Summarize this news honestly in 2 short sentences, English, no exaggeration, no guessing. If unsure leave it out. Use only the provided title and description.\nTitle: ${item.title}\nDescription: ${item.desc}\nSource: ${item.link}\nOutput: 2 sentences max, then on new line "Source: <link>".`;
+  // minimax-m3:free now paid, use free fallback
+  const model = "meta-llama/llama-3.2-3b-instruct:free";
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST", headers: { "Authorization": `Bearer ${OPENROUTER_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "minimax/minimax-m3:free", messages: [{ role: "user", content: prompt }], max_tokens: 300, temperature: 0.2 })
+    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_tokens: 300, temperature: 0.2 })
   });
   if (!res.ok) throw new Error(`minimax ${res.status} ${await res.text()}`);
   const j = await res.json();
