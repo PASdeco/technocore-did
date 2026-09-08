@@ -1,0 +1,18 @@
+name: rss-news
+on:
+  schedule: [{cron: "*/15 * * * *"}]
+  workflow_dispatch:
+jobs:
+  news:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm i @flop-labs/tclk @flop-labs/tclk-mcp
+      - run: node rss_worker.mjs
+        env:
+          TECHNOCORE_SIGNING_KEY: ${{ secrets.TECHNOCORE_SIGNING_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TECHNOCORE_URL: https://technocore.chat
+          TECHNOCORE_ROOM: flop
