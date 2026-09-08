@@ -24,12 +24,17 @@ const FEEDS = [
 const STATE_NS = `p-rss-${signer.did.slice(-8).toLowerCase()}`; // e.g., p-rss-12rmxlqh lowercase
 
 async function req(url, init) {
-  for (let i = 0; i < 3; i++) {
-    const r = await fetch(url, init);
-    if (r.status !== 429) return r;
-    const wait = Number(r.headers.get("retry-after")) || 5;
-    await new Promise(s => setTimeout(s, wait * 1000));
+  let lastErr = null;
+  for (let i = 0; i < 4; i++) {
+    try {
+      const r = await fetch(url, init);
+      if (r.status !== 429) return r;
+      const wait = Number(r.headers.get("retry-after")) || 5;
+      console.log(`429 for ${url.slice(0,60)}, wait ${wait}s retry ${i+1}/4`);
+      await new Promise(s => setTimeout(s, wait * 1000));
+    } catch (e) { lastErr = e; await new Promise(s => setTimeout(s, 2000)); }
   }
+  throw new Error(`REQ_FAIL ${url.slice(0,80)} ${lastErr ? lastErr.message : "rate limited x4"}`);
 }
 async function kvGet(ns, key) {
   const r = await req(`${BASE}/kv/${ns}/${key}`);
@@ -53,6 +58,18 @@ async function postRoom(text) {
   console.log(`posted to ${ROOM} seq ${j.posted.seq}: ${swept.slice(0,120)}`);
   return j.posted.seq;
 }
+function stripCdata(v) {
+  v = v.trim();
+  if (v.startsWith("<![CDATA[")) v = v.slice(9);
+  if (v.endsWith("]]>")) v = v.slice(0, -3);
+  return v.trim();
+}
+function cleanText(v) {
+  v = stripCdata(v);
+  v = v.replace(/<[^>]*>/g, " "); // strip HTML tags from descriptions
+  v = v.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#8217;/g, "'").replace(/&#8220;/g, '"').replace(/&#8221;/g, '"').replace(/&#8212;/g, "-").replace(/&nbsp;/g, " ");
+  return v.replace(/\s+/g, " ").trim();
+}
 function parseRSS(xml) {
   const items = [];
   const re = /<item[^>]*>([\s\S]*?)<\/item>/gi;
@@ -62,12 +79,7 @@ function parseRSS(xml) {
     const get = (tag) => {
       const r = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i");
       const f = block.match(r);
-      if (!f) return "";
-      let v = f[1].trim();
-      v = v.replace(/^<!\[CDATA\[|\]\]>$/g, "").trim();
-      // decode entities
-      v = v.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
-      return v;
+      return f ? cleanText(f[1]) : "";
     };
     const title = get("title");
     const link = get("link");
@@ -104,48 +116,61 @@ async function summarize(feedTag, item) {
   return out.slice(0, 800); // room limit 4096, keep safe
 }
 
+let posted = 0, skipped = 0, feedErrors = 0;
+const UA = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36", "Accept": "application/rss+xml, application/xml, text/xml, */*" };
 for (const feed of FEEDS) {
-  console.log(`\n--- ${feed.name} ${feed.url}`);
-  let xml;
   try {
-    const r = await req(feed.url);
-    if (!r.ok) { console.log(`fetch ${feed.name} ${r.status}`); continue; }
-    xml = await r.text();
-  } catch (e) { console.log(`fetch ${feed.name} fail ${e.message}`); continue; }
+    console.log(`\n--- ${feed.name} ${feed.url}`);
+    let xml;
+    try {
+      const r = await req(feed.url, { headers: UA });
+      if (!r.ok) { console.log(`FEED_SKIP ${feed.name} http ${r.status}`); skipped++; continue; }
+      xml = await r.text();
+    } catch (e) { console.log(`FEED_SKIP ${feed.name} fetch ${e.message}`); skipped++; continue; }
 
-  const items = parseRSS(xml);
-  console.log(`parsed ${items.length} items`);
-  if (items.length === 0) continue;
+    const items = parseRSS(xml);
+    console.log(`parsed ${items.length} items`);
+    if (items.length === 0) { console.log(`FEED_SKIP ${feed.name} empty`); skipped++; continue; }
 
-  const lastSeen = await kvGet(STATE_NS, `last-${feed.name}`);
-  console.log(`last-seen ${feed.name}: ${lastSeen || "(none)"}`);
+    let lastSeen = null;
+    try { lastSeen = await kvGet(STATE_NS, `last-${feed.name}`); }
+    catch (e) { console.log(`FEED_WARN ${feed.name} last-seen read ${e.message}`); }
+    console.log(`last-seen ${feed.name}: ${lastSeen ? lastSeen.slice(0,60) : "(none)"}`);
 
-  // find new items since lastSeen (guid based, newest first in RSS)
-  let newItems = [];
-  for (const it of items) {
-    if (it.guid === lastSeen) break;
-    newItems.push(it);
+    // find new items since lastSeen (guid based, newest first in RSS)
+    let newItems = [];
+    for (const it of items) {
+      if (it.guid === lastSeen) break;
+      newItems.push(it);
+    }
+    if (lastSeen === null) {
+      // first run: only take newest 1 to avoid spam
+      newItems = items.slice(0, 1);
+      console.log(`first run, taking newest 1 only`);
+    }
+    newItems.reverse();
+    if (newItems.length === 0) { console.log(`no new for ${feed.name}, skip`); skipped++; continue; }
+
+    console.log(`new for ${feed.name}: ${newItems.length}`);
+    for (const item of newItems.slice(0, 2)) { // max 2 per source per cycle
+      try {
+        const summary = await summarize(feed.tag, item);
+        console.log(`summary: ${summary.slice(0,150)}`);
+        await postRoom(summary);
+        posted++;
+      } catch (e) { console.log(`ITEM_SKIP ${feed.name} ${e.message.slice(0,160)}`); continue; }
+      try {
+        const histKey = `hist-${feed.name}-${Date.now()}`;
+        await kvSet(STATE_NS, histKey, `${new Date().toISOString()} ${(item.guid || "").slice(0,120)} ${(item.link || "").slice(0,200)}`);
+      } catch (e) { console.log(`FEED_WARN history write ${e.message.slice(0,120)}`); }
+    }
+    try {
+      await kvSet(STATE_NS, `last-${feed.name}`, items[0].guid);
+      console.log(`updated last-${feed.name}`);
+    } catch (e) { console.log(`FEED_WARN last-seen write ${e.message.slice(0,160)}`); }
+  } catch (e) {
+    feedErrors++;
+    console.log(`FEED_ERROR ${feed.name} ${e.message.slice(0,200)}`);
   }
-  if (lastSeen === null) {
-    // first run: only take newest 1 to avoid spam, record it
-    newItems = items.slice(0, 1);
-    console.log(`first run, taking newest 1 only`);
-  }
-  // post oldest first so room order is chronological
-  newItems.reverse();
-  if (newItems.length === 0) { console.log(`no new for ${feed.name}, skip`); continue; }
-
-  console.log(`new for ${feed.name}: ${newItems.length}`);
-  for (const item of newItems.slice(0, 2)) { // max 2 per source per cycle to avoid burst
-    const summary = await summarize(feed.tag, item);
-    console.log(`summary: ${summary.slice(0,150)}`);
-    await postRoom(summary);
-    // private history record
-    const histKey = `hist-${feed.name}-${Date.now()}`;
-    await kvSet(STATE_NS, histKey, `${new Date().toISOString()} | ${item.guid} | ${item.link}`);
-  }
-  // update last-seen to newest item's guid
-  await kvSet(STATE_NS, `last-${feed.name}`, items[0].guid);
-  console.log(`updated last-${feed.name} -> ${items[0].guid.slice(0,40)}`);
 }
-console.log("\ncycle done");
+console.log(`\ncycle done posted=${posted} skipped=${skipped} feedErrors=${feedErrors}`);
