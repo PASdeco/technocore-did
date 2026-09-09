@@ -152,6 +152,11 @@ for (const feed of FEEDS) {
     if (newItems.length === 0) { console.log(`no new for ${feed.name}, skip`); skipped++; continue; }
 
     console.log(`new for ${feed.name}: ${newItems.length}`);
+    // claim first: write last-seen BEFORE posting so overlapping runs can't double-post
+    try {
+      await kvSet(STATE_NS, `last-${feed.name}`, items[0].guid);
+      console.log(`claimed last-${feed.name} before posting`);
+    } catch (e) { console.log(`FEED_WARN last-seen claim ${e.message.slice(0,160)}`); }
     for (const item of newItems.slice(0, 2)) { // max 2 per source per cycle
       try {
         const summary = await summarize(feed.tag, item);
@@ -164,10 +169,7 @@ for (const feed of FEEDS) {
         await kvSet(STATE_NS, histKey, `${new Date().toISOString()} ${(item.guid || "").slice(0,120)} ${(item.link || "").slice(0,200)}`);
       } catch (e) { console.log(`FEED_WARN history write ${e.message.slice(0,120)}`); }
     }
-    try {
-      await kvSet(STATE_NS, `last-${feed.name}`, items[0].guid);
-      console.log(`updated last-${feed.name}`);
-    } catch (e) { console.log(`FEED_WARN last-seen write ${e.message.slice(0,160)}`); }
+
   } catch (e) {
     feedErrors++;
     console.log(`FEED_ERROR ${feed.name} ${e.message.slice(0,200)}`);
